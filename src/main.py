@@ -1,6 +1,9 @@
 from utils.globals import *
 
 from utils.utils import *
+from face_detection import *
+
+from PIL import Image
 
 from model import *
 from timeit import default_timer as timer
@@ -8,7 +11,8 @@ from timeit import default_timer as timer
 
 def main():
     # Load the selected image
-    img = load_input()
+    img = Image.open(config.img_loc)
+    # show_detection(img, [])
 
     P_net = PNet().to(device)
     R_net = RNet().to(device)

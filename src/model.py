@@ -1,8 +1,9 @@
 ''' Models for all three stages of the inference process '''
 
-from utils.globals import config, device
+from utils.globals import *
 
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 import numpy as np
@@ -39,7 +40,7 @@ class PNet(nn.Module):
         self.features = nn.Sequential(OrderedDict([
             ('conv1', nn.Conv2d(3, self.kernel_num[0], self.kernel_size, bias=True)),
             ('prelu1', nn.PReLU(3, self.kernel_num[0])),
-            ('pool1', nn.MaxPool2d(3, 3)),
+            ('pool1', nn.MaxPool2d(2, 2)),
 
             ('conv2', nn.Conv2d(self.kernel_num[0],
                       self.kernel_num[1], self.kernel_size, bias=True)),
@@ -67,9 +68,9 @@ class PNet(nn.Module):
         x = self.features(input)
 
         # Compute the parameters necessary for bboxes 
-        bboxes = self.conv4_1(x)
+        bboxes = self.conv4_2(x)
         # Compute probabilities that boxes contain face
-        probs = self.conv4_2(x)
+        probs = F.softmax(self.conv4_1(x), dim=1)
 
         return bboxes, probs
 
@@ -81,7 +82,7 @@ class RNet(nn.Module):
 
         self.kernel_size = [3, 3, 2]
         self.kernel_num = [28, 48, 64]
-        self.pool_size = (3, 3)
+        self.pool_size = (2,2)
         self.fc_size = 128
 
         self.prob_num = 2
@@ -124,9 +125,9 @@ class RNet(nn.Module):
         x = self.features(input)
 
         # Compute the parameters necessary for bboxes 
-        bboxes = self.conv4_1(x)
+        bboxes = self.conv5_2(x)
         # Compute probabilities that boxes contain face
-        probs = self.conv4_2(x)
+        probs = F.softmax(self.conv5_1(x), dim=1)
 
         return bboxes, probs
 
@@ -138,7 +139,7 @@ class ONet(nn.Module):
 
         self.kernel_size = [3, 3, 2, 2]
         self.kernel_num = [32, 64, 64, 128]
-        self.pool_size = [(3, 3), (3, 3), (2, 2)]
+        self.pool_size = [(2,2)]*3
         self.fc_size = 256
 
         self.prob_num = 2
@@ -188,11 +189,11 @@ class ONet(nn.Module):
         x = self.features(input)
 
         # Compute the parameters necessary for bboxes 
-        bboxes = self.conv5_1(x)
+        bboxes = self.conv6_1(x)
         # Compute probabilities that boxes contain face
-        probs = self.conv5_2(x)
+        probs = F.softmax(self.conv6_2(x), dim=1)
         # Compute the x and y values for landmark points
-        landmarks = self.conv5_3(x)
+        landmarks = self.conv6_3(x)
 
         return bboxes, probs, landmarks
 
