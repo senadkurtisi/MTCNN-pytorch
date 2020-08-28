@@ -16,9 +16,11 @@ def main():
 
     P_net = PNet().to(device)
     R_net = RNet().to(device)
-    O_net = ONet().to(device)
+    O_net = ONet().to(device).eval()
 
-    stage_one(P_net, img)
+    bboxes = stage_one(P_net, img)
+    bboxes = stage_two(R_net, bboxes, img)
+    bboxes = stage_three(O_net, bboxes, img)
 
     return img
 

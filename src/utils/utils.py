@@ -9,24 +9,27 @@ import numpy as np
 from timeit import default_timer as timer
 
 
-def prepare_image(img, scale=1.0):
+def prepare_image(img, scale=None):
 	''' Prepares the image for the first
 		stage of the inference process.
 		Image is resized, normalized and
 		transformed into PyTorch tensor.
 	'''
-	w, h = img.size
-	# Calculate shape of rescaled image
-	new_w = int(np.ceil(w*scale))
-	new_h = int(np.ceil(h*scale))
-	# Resize the image using bilinear interpolation
-	img = img.resize((new_w, new_h), Image.BILINEAR)
+	if scale:
+		w, h = img.size
+		# Calculate shape of rescaled image
+		new_w = int(np.ceil(w*scale))
+		new_h = int(np.ceil(h*scale))
+		# Resize the image using bilinear interpolation
+		img = img.resize((new_w, new_h), Image.BILINEAR)
 
 	# Normalize the input image
 	img = np.array(img)
 	img = (img-MEAN)/STD
+	img = np.moveaxis(img, 2, 0)
+	img = torch.from_numpy(img)
 	
-	to_torch = transforms.Compose([transforms.ToTensor(),
+	to_torch = transforms.Compose([
 								   transforms.Lambda(lambda x: x.unsqueeze(0)),
 								   transforms.Lambda(lambda x: x.to(device, torch.float))
 								])
@@ -73,23 +76,26 @@ def generate_bboxes(offsets, probs, scale, threshold):
     cell_size = 12
 
     keep_ind = np.where(probs > threshold)
-    tx1, ty1, tx2, ty2 = (offsets[0, :4, keep_ind[0], keep_ind[1]]).T
+    # tx1, ty1, tx2, ty2 = [offsets[0, i, keep_ind[0], keep_ind[1]] for i in range(4)]
+    tx1, ty1, tx2, ty2 = offsets[0, :4, keep_ind[0], keep_ind[1]].T
 
-    offsets = np.vstack([tx1, ty1, tx2, ty2])
-    probs = np.expand_dims(probs[keep_ind[0], keep_ind[1]],0)
+    offsets = np.array([tx1, ty1, tx2, ty2])
+    score = probs[keep_ind[0], keep_ind[1]]
 
-
-    bboxes = np.vstack([
+    # P-Net is applied to scaled images
+    # so we need to rescale bounding boxes back
+    bounding_boxes = np.vstack([
         np.round((STRIDE*keep_ind[1] + 1.0)/scale),
         np.round((STRIDE*keep_ind[0] + 1.0)/scale),
         np.round((STRIDE*keep_ind[1] + 1.0 + cell_size)/scale),
         np.round((STRIDE*keep_ind[0] + 1.0 + cell_size)/scale),
-    ]).T
+        score, offsets
+    ])
 
-    return np.hstack([bboxes, offsets.T, probs.T])
+    return bounding_boxes.T
 
 
-def nms(bboxes, threshold):
+def nms(bboxes, threshold, mode='iou'):
 	''' Performs the classical IoU NMS. '''
 	
 	keep_ind = []
@@ -97,40 +103,39 @@ def nms(bboxes, threshold):
 	x1, y1, x2, y2, probs = [bboxes[:, i] for i in range(5)]
 	# Find indices for bbox coordinates sorted by probability
 	# that it contains a face in decresing order
-	sorted_score_indices = np.argsort(probs)[::-1]
+	sorted_score_indices = np.argsort(probs)
+	area = (x2 - x1 + 1.0)*(y2 - y1 + 1.0)
 
 	while len(sorted_score_indices)>0:
-		index = sorted_score_indices[0]
-		# Since this
+		last = len(sorted_score_indices)-1
+		index = sorted_score_indices[last]
+		
 		keep_ind.append(index)
-
-		# Calculating the area of current bbox
-		h_curr = y2[index]-y1[index]+1
-		w_curr = x2[index]-x1[index]+1
-		current_area = h_curr*w_curr
 
 		# Find the intersection points of the
 		# current bbox with other bboxes
-		x1_inter = np.maximum(x1[index], x1[sorted_score_indices[1:]])
-		y1_inter = np.maximum(y1[index], y1[sorted_score_indices[1:]])
-		x2_inter = np.minimum(x2[index], x2[sorted_score_indices[1:]])
-		y2_inter = np.minimum(y2[index], y2[sorted_score_indices[1:]])
+		x1_inter = np.maximum(x1[index], x1[sorted_score_indices[:last]])
+		y1_inter = np.maximum(y1[index], y1[sorted_score_indices[:last]])
 
-		# Calculate IoU - Intersection Over Union
+		x2_inter = np.minimum(x2[index], x2[sorted_score_indices[:last]])
+		y2_inter = np.minimum(y2[index], y2[sorted_score_indices[:last]])
+
+		# Calculate intersection
 		h_inter = np.maximum((y2_inter-y1_inter+1), 0)
 		w_inter = np.maximum((x2_inter-x1_inter+1), 0)
 		intersection =  h_inter*w_inter
 
-		remaining_w = x2[sorted_score_indices[1:]]-x1[sorted_score_indices[1:]]+1
-		remaining_h = y2[sorted_score_indices[1:]]-y1[sorted_score_indices[1:]]+1
-		remaining_areas = remaining_w*remaining_h
+		if mode == 'iou':
+			IoU = intersection/(area[index] + area[sorted_score_indices[:last]] - intersection)
+			# Remove unnecessary bboxes
+			to_remove = np.where(IoU>threshold)[0]
+		else:
+			overlap = intersection/np.minimum(area[index], area[sorted_score_indices[:last]])
+			to_remove = np.where(overlap>threshold)[0]
 
-		IoU = intersection/(current_area + remaining_areas - intersection)
-
-		# Remove unnecessary bboxes
-		to_remove = np.where(IoU>threshold)
+		# sorted_score_indices = np.delete(sorted_score_indices, np.concatenate([[last], to_remove]))
 		sorted_score_indices = np.delete(sorted_score_indices, to_remove)
-		sorted_score_indices = sorted_score_indices[1:]
+		sorted_score_indices = sorted_score_indices[:-1]
 
 	return keep_ind
 
@@ -141,7 +146,14 @@ def show_detection(img, bboxes, landmarks=[]):
 	for box in bboxes:
 		draw.rectangle([(box[0], box[1]), 
 						(box[2], box[3])], 
-						outline='red')
+						outline='blue')
+
+
+	for landmark in landmarks:
+		for i in range(5):
+			draw.ellipse([(landmark[i]-1, landmark[i+5]-1),
+						(landmark[i]+1, landmark[i+5]+1)],
+						outline='blue')
 
 	img.show()
 
@@ -158,7 +170,7 @@ def calibrate_bboxes(bboxes, offsets):
 	Returns:
 		bboxes (numpy.ndarray): calibrated bboxes
 	'''
-	x1, y1, x2, y2 = bboxes.T[:4,:]
+	x1, y1, x2, y2 = bboxes[:, :4].T
 	w = np.expand_dims((x2-x1+1),1)
 	h = np.expand_dims((y2-y1+1),1)
 
@@ -190,3 +202,82 @@ def square_up(bboxes):
 	square_bboxes[:, 3] = square_bboxes[:, 1] + longer_side - 1.0
 
 	return square_bboxes
+
+
+def get_image_patches(bboxes, img, patch_size):
+	CHANNELS = 3
+	bbox_num = len(bboxes)
+	w, h = img.size
+
+	patches = np.zeros((bbox_num, CHANNELS, patch_size, patch_size))
+
+	[x, y, ex, ey, dx, dy, edx, edy, h_outlier, w_outlier] = \
+										handle_outliers(bboxes, w, h)
+
+	img = np.array(img).astype('uint8')
+	good = 0
+	bad = 0
+	for ind in range(bbox_num):
+		patch = np.zeros((h_outlier[ind], w_outlier[ind], CHANNELS)).astype('uint8')
+		try:
+			patch[dy[ind]:(edy[ind]+1), dx[ind]:(edx[ind]+1)] = \
+									img[x[ind]:(ex[ind]+1), y[ind]:(ey[ind]+1)]
+			good += 1
+		except:
+			bad += 1
+			h1, h2 = (edy[ind]-dy[ind])+1, (ey[ind]-y[ind])+1
+			h_chosen = min(min(h1, h2), h_outlier[ind])
+			w1, w2 = (edx[ind]-dx[ind])+1, (ex[ind]-x[ind])+1 
+			w_chosen = min(min(w1, w2), w_outlier[ind])
+
+			patch[dy[ind]:(dy[ind]+h_chosen), dx[ind]:(dx[ind]+w_chosen)] = \
+				img[y[ind]:(y[ind]+h_chosen), x[ind]:(x[ind]+w_chosen)]
+
+		patch = Image.fromarray(patch)
+		patch = patch.resize((patch_size, patch_size), Image.BILINEAR)
+
+		patches[ind] = prepare_image(patch)
+
+
+	patches = torch.from_numpy(patches)
+	patches.requires_grad = False
+	return patches.to(device, torch.float)
+	# print(f"Total:{bbox_num}, good:{good}, bad:{bad}")
+
+
+
+def handle_outliers(bboxes, width, height):
+	''' Handles bboxes which reach out of the
+		border of the image. Border is proposed
+		via width and height of the image.
+	'''
+	bbox_num = len(bboxes)
+
+	x1, y1, x2, y2 = bboxes[:, :4].T
+	w = (x2-x1) + 1
+	h = (y2-y1) + 1
+
+	x, ex, y, ey = x1, x2, y1, y2
+	edx, edy = w, h
+	dx, dy = np.zeros((bbox_num, )), np.zeros((bbox_num, ))
+
+	ind = np.where(ex>width)[0]
+	edx[ind] = (width-ex[ind]) + (w[ind])
+	ex[ind] = width 
+
+	ind = np.where(x<0)[0]
+	dx[ind] = -x[ind]
+	x[ind] = 0
+
+	ind = np.where(ey>height)[0]
+	edy[ind] = (height-ey[ind]) + (h[ind])
+	ey[ind] = height
+
+	ind = np.where(y<0)[0]
+	dy[ind] = -y[ind]
+	y[ind] = 0
+
+	corrected_coords = [x, y, ex, ey, dx, dy, edx, edy, h, w]
+	corrected_coords = [coord.astype('int32') for coord in corrected_coords]
+
+	return corrected_coords

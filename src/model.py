@@ -51,8 +51,8 @@ class PNet(nn.Module):
             ('prelu3', nn.PReLU(self.kernel_num[2])),
         ]))
 
-        self.conv4_1 = nn.Conv2d(self.kernel_num[2], self.bboxes_values, 3)
-        self.conv4_2 = nn.Conv2d(self.kernel_num[2], self.prob_num, 3)
+        self.conv4_1 = nn.Conv2d(self.kernel_num[2], self.prob_num, 3)
+        self.conv4_2 = nn.Conv2d(self.kernel_num[2], self.bboxes_values, 3)
 
         self.load_pretrained()
 
@@ -107,8 +107,8 @@ class RNet(nn.Module):
             ('prelu4', nn.PReLU(self.fc_size)),
         ]))
 
-        self.conv5_1 = nn.Linear(self.fc_size, self.bboxes_values, bias=True)
-        self.conv5_2 = nn.Linear(self.fc_size, self.prob_num, bias=True)
+        self.conv5_1 = nn.Linear(self.fc_size, self.prob_num, bias=True)
+        self.conv5_2 = nn.Linear(self.fc_size, self.bboxes_values, bias=True)
 
         self.load_pretrained()
         
@@ -139,7 +139,7 @@ class ONet(nn.Module):
 
         self.kernel_size = [3, 3, 2, 2]
         self.kernel_num = [32, 64, 64, 128]
-        self.pool_size = [(2,2)]*3
+        self.pool_size = [(2,2), (2,2), (2,2)]
         self.fc_size = 256
 
         self.prob_num = 2
@@ -170,8 +170,8 @@ class ONet(nn.Module):
             ('prelu5', nn.PReLU(self.fc_size)),
         ]))
 
-        self.conv6_1 = nn.Linear(self.fc_size, self.bboxes_values, bias=True)
-        self.conv6_2 = nn.Linear(self.fc_size, self.prob_num, bias=True)
+        self.conv6_1 = nn.Linear(self.fc_size, self.prob_num, bias=True)
+        self.conv6_2 = nn.Linear(self.fc_size, self.bboxes_values, bias=True)
         self.conv6_3 = nn.Linear(self.fc_size, self.landmark_values, bias=True)
 
         self.load_pretrained()
@@ -189,9 +189,9 @@ class ONet(nn.Module):
         x = self.features(input)
 
         # Compute the parameters necessary for bboxes 
-        bboxes = self.conv6_1(x)
+        bboxes = self.conv6_2(x)
         # Compute probabilities that boxes contain face
-        probs = F.softmax(self.conv6_2(x), dim=1)
+        probs = F.softmax(self.conv6_1(x), dim=1)
         # Compute the x and y values for landmark points
         landmarks = self.conv6_3(x)
 
