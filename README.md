@@ -11,9 +11,9 @@ Stages:
 CNNs are pretrained and used as such. This repo is an implementation of [Zhang's](https://kpzhang93.github.io/) work. The weights can be found in the [pretrained weights](src/pretrained_weights) folder.
 
 # Results
-<img src="results/girls_out.png" width="320" height="360"> <img src="results/children_out.png" width="240" height="360">
+<img src="results/girls_out.png" width="360" height="270"> <img src="results/children_out.png" width="360" height="270">
 
-<img src="results/students_out.png" width="480" height="360"> <img src="results/friends_out.png" width="240" height="360">
+<img src="results/students_out.png" width="360" height="270"> <img src="results/friends_out.png" width="360" height="270">
 
 # Instructions
 1. Open Anaconda Prompt and navigate to the directory of this repo by using: ```cd PATH_TO_THIS_REPO ```
