@@ -193,8 +193,8 @@ def show(img, bboxes, landmarks=[]):
                                    5x & 5y coords
     '''
     # Disable the toolbar on the figures
-    # import matplotlib as mpl
-    # mpl.rcParams['toolbar'] = 'None'
+    import matplotlib as mpl
+    mpl.rcParams['toolbar'] = 'None'
 
     # Color of the bboxes
     BOX_COLOR = 'r'
