@@ -1,283 +1,210 @@
 from .globals import *
+from .image_utils import *
 
-import torch
-import torchvision.transforms as transforms
-
-from PIL import Image, ImageDraw
 import numpy as np
 
-from timeit import default_timer as timer
+
+def bbox_clean_up(bboxes, threshold):
+    ''' Performs clean up on detected
+        bboxes by executing NMS with
+        given threshold, calibrating them
+        and turning them into squares.
+
+    Arguments:
+        bboxes (numpy.ndarray): detected bboxes
+        threshold (float): NMS threshold
+    Returns:
+        bboxes (numpy.ndarray): bboxes kept after NMS
+    '''
+    # Perform NMS on detected bboxes
+    keep_ind = nms(bboxes[:, :5], threshold)
+    bboxes = bboxes[keep_ind]
+
+    # Calibrate coords of bboxes with respect to offsets
+    bboxes = calibrate_bboxes(bboxes[:, :5], bboxes[:, 5:])
+    # Turn bboxes into squares
+    bboxes = square_up(bboxes)
+    bboxes[:, :4] = np.round(bboxes[:, :4])
+
+    return bboxes
 
 
-def prepare_image(img, scale=None):
-	''' Prepares the image for the first
-		stage of the inference process.
-		Image is resized, normalized and
-		transformed into PyTorch tensor.
-	'''
-	if scale:
-		w, h = img.size
-		# Calculate shape of rescaled image
-		new_w = int(np.ceil(w*scale))
-		new_h = int(np.ceil(h*scale))
-		# Resize the image using bilinear interpolation
-		img = img.resize((new_w, new_h), Image.BILINEAR)
+def output_clean(threshold, offsets, probs, bboxes=[], landmarks=[]):
+    ''' Performs the clean up of outputs of neural net
+        by keeping only those which satisfy the
+        probability threshold.
 
-	# Normalize the input image
-	img = np.array(img)
-	img = (img-MEAN)/STD
-	img = np.moveaxis(img, 2, 0)
-	img = torch.from_numpy(img)
-	
-	to_torch = transforms.Compose([
-								   transforms.Lambda(lambda x: x.unsqueeze(0)),
-								   transforms.Lambda(lambda x: x.to(device, torch.float))
-								])
-	img = to_torch(img)
-	img.requires_grad = False
+    Arguments:
+        threshold (float): probability threshold
+        offsets (numpy.ndarray): offset output of CNN
+        probs (numpy.ndarray): probability output of CNN
+        bboxes (numpy.ndarray): detected bboxes
+        landmarks (numpy.ndarray): landmarks output of CNN
+    Returns:
+        to_keep (list): output which satisfy the probability
+                        threshold
+    '''
+    # Detect which elements satisfy the probability threshold
+    keep_ind = np.where(probs > threshold)[0]
 
-	return img	
+    offsets = offsets[keep_ind]
+    probs = probs[keep_ind]
 
+    to_keep = [offsets, probs]
 
-def create_scales(img):
-	''' Creates scale ratios used to scale the
-		input image in order to create the image
-		pyramid.
+    if len(bboxes):
+        bboxes = bboxes[keep_ind]
+        bboxes[:, 4] = probs.copy()
+        to_keep.append(bboxes)
 
-	Arguments:
-		img(torch.Tensor): input image
-	Returns:
-		img_scales (list): scale ratios for the
-						   image pyramid
-	'''
-	img_scales = []
-	w,h = img.size
-	min_dim = min(h, w)
+    if len(landmarks):
+        to_keep.append(landmarks[keep_ind])
 
-	# Operations bellow scale the image so that
-	# min size we WANT detect becomes equal to
-	# min size we CAN to detect
-	ratio = MIN_DETECTION_SIZE/MIN_FACE_SIZE
-	min_dim *= ratio
-
-	power = 0
-	while min_dim > MIN_DETECTION_SIZE:
-		scale = ratio*(MUL_FACTOR**power)
-		img_scales.append(scale)
-
-		min_dim *= MUL_FACTOR
-		power += 1
-
-	return img_scales
+    return to_keep
 
 
 def generate_bboxes(offsets, probs, scale, threshold):
+    ''' Generates bounding boxes based on outputs
+        of the CNN.
+
+    Arguments:
+        offsets (numpy.ndarray): offset output of CNN
+        probs (numpy.ndarray): probability output of CNN
+        scale (float): scale ratio for input image
+    Returns:
+        bboxes (numpy.ndarray): generated bboxes
+    '''
     STRIDE = 2
-    cell_size = 12
+    KERNEL = 12
 
+    # indices of boxes where there is probably a face
     keep_ind = np.where(probs > threshold)
-    # tx1, ty1, tx2, ty2 = [offsets[0, i, keep_ind[0], keep_ind[1]] for i in range(4)]
-    tx1, ty1, tx2, ty2 = offsets[0, :4, keep_ind[0], keep_ind[1]].T
 
-    offsets = np.array([tx1, ty1, tx2, ty2])
-    score = probs[keep_ind[0], keep_ind[1]]
+    if len(keep_ind[0]) == 0:  # If no sliding window is good enough
+        return np.array([])
 
-    # P-Net is applied to scaled images
-    # so we need to rescale bounding boxes back
-    bounding_boxes = np.vstack([
-        np.round((STRIDE*keep_ind[1] + 1.0)/scale),
-        np.round((STRIDE*keep_ind[0] + 1.0)/scale),
-        np.round((STRIDE*keep_ind[1] + 1.0 + cell_size)/scale),
-        np.round((STRIDE*keep_ind[0] + 1.0 + cell_size)/scale),
-        score, offsets
-    ])
+    # Save only necessary probabilities
+    probs = probs[keep_ind[0], keep_ind[1]]
 
-    return bounding_boxes.T
+    # Acquire offset for each coordinate (only necessary)
+    off_x1, off_y1, off_x2, off_y2 = offsets[0, :, keep_ind[0], keep_ind[1]].T
+    offsets = np.vstack([off_x1, off_y1, off_x2, off_y2])
 
+    net_output = np.vstack([probs, offsets]).T
 
-def nms(bboxes, threshold, mode='iou'):
-	''' Performs the classical IoU NMS. '''
-	
-	keep_ind = []
+    # PNet is applied to scaled input image so
+    # we need to calculate bbox coords with respect
+    # to the applied scaling
+    bboxes = np.vstack([
+        np.round((STRIDE * keep_ind[1] + 1) / scale),
+        np.round((STRIDE * keep_ind[0] + 1) / scale),
+        np.round((STRIDE * keep_ind[1] + 1 + KERNEL) / scale),
+        np.round((STRIDE * keep_ind[0] + 1 + KERNEL) / scale),
+    ]).T
 
-	x1, y1, x2, y2, probs = [bboxes[:, i] for i in range(5)]
-	# Find indices for bbox coordinates sorted by probability
-	# that it contains a face in decresing order
-	sorted_score_indices = np.argsort(probs)
-	area = (x2 - x1 + 1.0)*(y2 - y1 + 1.0)
-
-	while len(sorted_score_indices)>0:
-		last = len(sorted_score_indices)-1
-		index = sorted_score_indices[last]
-		
-		keep_ind.append(index)
-
-		# Find the intersection points of the
-		# current bbox with other bboxes
-		x1_inter = np.maximum(x1[index], x1[sorted_score_indices[:last]])
-		y1_inter = np.maximum(y1[index], y1[sorted_score_indices[:last]])
-
-		x2_inter = np.minimum(x2[index], x2[sorted_score_indices[:last]])
-		y2_inter = np.minimum(y2[index], y2[sorted_score_indices[:last]])
-
-		# Calculate intersection
-		h_inter = np.maximum((y2_inter-y1_inter+1), 0)
-		w_inter = np.maximum((x2_inter-x1_inter+1), 0)
-		intersection =  h_inter*w_inter
-
-		if mode == 'iou':
-			IoU = intersection/(area[index] + area[sorted_score_indices[:last]] - intersection)
-			# Remove unnecessary bboxes
-			to_remove = np.where(IoU>threshold)[0]
-		else:
-			overlap = intersection/np.minimum(area[index], area[sorted_score_indices[:last]])
-			to_remove = np.where(overlap>threshold)[0]
-
-		# sorted_score_indices = np.delete(sorted_score_indices, np.concatenate([[last], to_remove]))
-		sorted_score_indices = np.delete(sorted_score_indices, to_remove)
-		sorted_score_indices = sorted_score_indices[:-1]
-
-	return keep_ind
+    return np.hstack([bboxes, net_output])
 
 
-def show_detection(img, bboxes, landmarks=[]):
-	draw = ImageDraw.Draw(img)
+def nms(bboxes, threshold, mode='union'):
+    ''' Apply NMS to detected bboxes.
 
-	for box in bboxes:
-		draw.rectangle([(box[0], box[1]), 
-						(box[2], box[3])], 
-						outline='blue')
+    Arguments:
+        bboxes (numpy.ndarray): detected bboxes
+        threshold (float): NMS threshold
+        mode (string): criteria for NMS
+    Returns:
+        keep_ind (list): list of indices of
+                         bboxes kept after NMS
+    '''
+    # Indices of bboxes we wish to keep after NMS
+    keep_ind = []
+    # grab the coordinates of the bounding boxes
+    x1, y1, x2, y2, score = bboxes[:, :5].T
 
+    global_areas = (x2 - x1 + 1.0) * (y2 - y1 + 1.0)
+    ids = np.argsort(score)  # in increasing order
 
-	for landmark in landmarks:
-		for i in range(5):
-			draw.ellipse([(landmark[i]-1, landmark[i+5]-1),
-						(landmark[i]+1, landmark[i+5]+1)],
-						outline='blue')
+    while len(ids) > 0:
+        ind = ids[-1]
+        keep_ind.append(ind)
 
-	img.show()
+        # Top left corner of the intersection
+        x1_inter = np.maximum(x1[ind], x1[ids[:-1]])
+        y1_inter = np.maximum(y1[ind], y1[ids[:-1]])
+
+        # Bottom right corner of the intersection
+        x2_inter = np.minimum(x2[ind], x2[ids[:-1]])
+        y2_inter = np.minimum(y2[ind], y2[ids[:-1]])
+
+        # Width and height of the intersection
+        w_inter = np.maximum(x2_inter - x1_inter + 1, 0)
+        h_inter = np.maximum(y2_inter - y1_inter + 1, 0)
+
+        # Calculating the overlap area
+        intersection = w_inter * h_inter
+        if mode == 'minimum':
+            overlap = intersection / \
+                np.minimum(global_areas[ind], global_areas[ids[:-1]])
+        elif mode == 'union':
+            # intersection over union (IoU)
+            overlap = intersection / \
+                (global_areas[ind] + global_areas[ids[:-1]] - intersection)
+
+        # delete all boxes where overlap is too big
+        ids = np.delete(ids, np.where(overlap > threshold)[0])
+        ids = ids[:-1]
+
+    return keep_ind
 
 
 def calibrate_bboxes(bboxes, offsets):
-	''' Calibrates edge points of bboxes
-		with respect to the offsets
+    ''' Calibrates edge points of bboxes
+        with respect to the offsets.
 
-	Arguments:
-		bboxes (numpy.ndarray): bounding boxes which
-								we need to calibrate
-		offsets (numpy.ndarray): offsets used for 
-								 calibration
-	Returns:
-		bboxes (numpy.ndarray): calibrated bboxes
-	'''
-	x1, y1, x2, y2 = bboxes[:, :4].T
-	w = np.expand_dims((x2-x1+1),1)
-	h = np.expand_dims((y2-y1+1),1)
+    Arguments:
+        bboxes(numpy.ndarray): bounding boxes which
+                               we need to calibrate
+        offsets(numpy.ndarray): offsets used for
+                                calibration
+    Returns:
+        bboxes(numpy.ndarray): calibrated bboxes
+    '''
+    x1, y1, x2, y2 = bboxes[:, : 4].T
+    # Width and height of bboxes
+    w = np.expand_dims((x2 - x1 + 1), 1)
+    h = np.expand_dims((y2 - y1 + 1), 1)
 
-	correction = np.hstack([w, h, w, h])*offsets
-	bboxes[:,0:4] += correction
+    # Perform the correction of bboxes
+    correction = np.hstack([w, h, w, h]) * offsets
+    bboxes[:, 0: 4] += correction
 
-	return bboxes
+    return bboxes
+
 
 def square_up(bboxes):
-	''' Transforms the bounding boxes into
-		squares.
+    ''' Transforms the bounding boxes into squares.
 
-	Arguments:
-		bboxes (numpy.ndarray): bounding boxes
-	Returns:
-		square_boxes (numpy.ndarray): squared
-									  bboxes
-	'''
-	square_bboxes = np.zeros_like(bboxes)
-	x1, y1, x2, y2 = bboxes[:, :4].T
+    Arguments:
+        bboxes(numpy.ndarray): bounding boxes
+    Returns:
+        square_boxes(numpy.ndarray): squared bboxes
+    '''
+    square_bboxes = np.zeros_like(bboxes)
+    x1, y1, x2, y2 = bboxes[:, : 4].T
 
-	h = y2 - y1 + 1.0
-	w = x2 - x1 + 1.0
-	longer_side = np.maximum(h, w)
+    h = y2 - y1 + 1.0
+    w = x2 - x1 + 1.0
+    longer_side = np.maximum(h, w)
 
-	square_bboxes[:, 0] = x1 + w*0.5 - longer_side*0.5
-	square_bboxes[:, 1] = y1 + h*0.5 - longer_side*0.5
-	square_bboxes[:, 2] = square_bboxes[:, 0] + longer_side - 1.0
-	square_bboxes[:, 3] = square_bboxes[:, 1] + longer_side - 1.0
+    # Example: width:100, height:70. DIFF = (100-70).
+    # X coordinates of both top left and bottom right
+    # corners stay the same while y coords shift for DIFF/2.
+    # Top left y coord goes up for DIFF/2 while bottom left
+    # y coord goes DOWN for DIFF/2. Similar rules apply when
+    # the height is larger than width. We get square bbox.
+    square_bboxes[:, 0] = x1 + w * 0.5 - longer_side * 0.5
+    square_bboxes[:, 1] = y1 + h * 0.5 - longer_side * 0.5
+    square_bboxes[:, 2] = square_bboxes[:, 0] + longer_side - 1.0
+    square_bboxes[:, 3] = square_bboxes[:, 1] + longer_side - 1.0
 
-	return square_bboxes
-
-
-def get_image_patches(bboxes, img, patch_size):
-	CHANNELS = 3
-	bbox_num = len(bboxes)
-	w, h = img.size
-
-	patches = np.zeros((bbox_num, CHANNELS, patch_size, patch_size))
-
-	[x, y, ex, ey, dx, dy, edx, edy, h_outlier, w_outlier] = \
-										handle_outliers(bboxes, w, h)
-
-	img = np.array(img).astype('uint8')
-	good = 0
-	bad = 0
-	for ind in range(bbox_num):
-		patch = np.zeros((h_outlier[ind], w_outlier[ind], CHANNELS)).astype('uint8')
-		try:
-			patch[dy[ind]:(edy[ind]+1), dx[ind]:(edx[ind]+1)] = \
-									img[x[ind]:(ex[ind]+1), y[ind]:(ey[ind]+1)]
-			good += 1
-		except:
-			bad += 1
-			h1, h2 = (edy[ind]-dy[ind])+1, (ey[ind]-y[ind])+1
-			h_chosen = min(min(h1, h2), h_outlier[ind])
-			w1, w2 = (edx[ind]-dx[ind])+1, (ex[ind]-x[ind])+1 
-			w_chosen = min(min(w1, w2), w_outlier[ind])
-
-			patch[dy[ind]:(dy[ind]+h_chosen), dx[ind]:(dx[ind]+w_chosen)] = \
-				img[y[ind]:(y[ind]+h_chosen), x[ind]:(x[ind]+w_chosen)]
-
-		patch = Image.fromarray(patch)
-		patch = patch.resize((patch_size, patch_size), Image.BILINEAR)
-
-		patches[ind] = prepare_image(patch)
-
-
-	patches = torch.from_numpy(patches)
-	patches.requires_grad = False
-	return patches.to(device, torch.float)
-	# print(f"Total:{bbox_num}, good:{good}, bad:{bad}")
-
-
-
-def handle_outliers(bboxes, width, height):
-	''' Handles bboxes which reach out of the
-		border of the image. Border is proposed
-		via width and height of the image.
-	'''
-	bbox_num = len(bboxes)
-
-	x1, y1, x2, y2 = bboxes[:, :4].T
-	w = (x2-x1) + 1
-	h = (y2-y1) + 1
-
-	x, ex, y, ey = x1, x2, y1, y2
-	edx, edy = w, h
-	dx, dy = np.zeros((bbox_num, )), np.zeros((bbox_num, ))
-
-	ind = np.where(ex>width)[0]
-	edx[ind] = (width-ex[ind]) + (w[ind])
-	ex[ind] = width 
-
-	ind = np.where(x<0)[0]
-	dx[ind] = -x[ind]
-	x[ind] = 0
-
-	ind = np.where(ey>height)[0]
-	edy[ind] = (height-ey[ind]) + (h[ind])
-	ey[ind] = height
-
-	ind = np.where(y<0)[0]
-	dy[ind] = -y[ind]
-	y[ind] = 0
-
-	corrected_coords = [x, y, ex, ey, dx, dy, edx, edy, h, w]
-	corrected_coords = [coord.astype('int32') for coord in corrected_coords]
-
-	return corrected_coords
+    return square_bboxes

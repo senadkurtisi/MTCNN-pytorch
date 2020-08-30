@@ -1,108 +1,149 @@
 from utils.utils import *
+from utils.image_utils import prepare_image
 
 import numpy as np
-import torch.nn.functional as F
-
-import torchvision.transforms as transforms
 
 
 def stage_one(net, img):
-	''' Runs the stage one of the face
-		detection process.
-	'''
-	scales = create_scales(img)
-	bboxes = []
+    ''' Runs the stage one of the face
+        detection process.
 
-	for scale in scales:
-		# Acquire bounding boxes for current scale
-		bboxes_curr = PNetInference(net, img, scale)
-		if len(bboxes_curr) >1:	# NMS is performed only for 2+ bboxes
-			# perform the NMS
-			bboxes.append(bboxes_curr)
-		elif len(bboxes_curr)==1: # Avoid appending empty lists
-			bboxes.append(bboxes_curr[0].T)
-		else:
-			# print('None', scale)
-			pass
+    Arguments:
+        net (nn.Module): PNet instance
+        img (PIL image): input image
+    Return:
+        bboxes (numpy.ndarray): detected bboxes in
+                                the first stage
+    '''
+    scales = create_scales(img)
+    bboxes = []
 
-	# Combine all bboxes in one matrix
-	bboxes = np.vstack(bboxes)
-	# Peforms NMS
-	keep_ind = nms(bboxes[:, :5], NMS_THRESHOLDS[0])
-	bboxes = bboxes[keep_ind]
-	# Calibrate acquired bboxes
-	bboxes = calibrate_bboxes(bboxes[:,:5], bboxes[:,5:])
-	# Turn calibrate bboxes into squares
-	bboxes = square_up(bboxes)
-	return bboxes
+    for scale in scales:
+        # Acquire bounding boxes for current scale
+        bboxes_curr = PNetInference(net, img, scale)
+
+        if bboxes_curr is not None:  # One or more bboxes were found
+            bboxes.append(bboxes_curr)
+
+    # Combine all bboxes in one matrix
+    bboxes = np.vstack(bboxes)
+    # Clean up bboxes detected in current stage
+    bboxes = bbox_clean_up(bboxes=bboxes, threshold=NMS_THRESHOLDS[0])
+
+    return bboxes
 
 
 def stage_two(net, bboxes, img):
-	''' Runs the stage two of the face
-		detection process.
-	'''
-	img_patches = get_image_patches(bboxes, img, 24)
-	offsets, probs = net(img_patches)
+    ''' Runs the stage two of the face
+        detection process.
 
-	offsets = offsets.detach().data.numpy()
-	# We only keep the probability that bbxes contain
-	# a face. Pretrained PNet has complementary output.
-	probs = probs.detach().data.numpy()[:,1]
+    Arguments:
+        net (nn.Module): RNet instance
+        bboxes (numpy.ndarray): detected bboxes
+                                in the first stage
+        img (PIL image): input image
+    Returns:
+        bboxes (numpy.ndarray): detected bboxes
+                                in the second stage
+    '''
+    # Acquire image patches based on bbox coords
+    img_patches = get_image_patches(bboxes, img, 24)
+    # Propagate the image patches through the RNet
+    offsets, probs = net(img_patches)
 
-	keep_ind = np.where(probs>PROB_THRESHOLDS[1])[0]
-	offsets, bboxes = offsets[keep_ind], bboxes[keep_ind]
-	bboxes[:, 4] = probs[keep_ind]
+    offsets = offsets.detach().data.numpy()
+    # We only keep the probability that bbxes contain
+    # a face. Pretrained PNet has complementary output.
+    probs = probs.detach().data.numpy()[:, 1]
 
-	keep_ind = nms(bboxes, NMS_THRESHOLDS[1])
-	bboxes = bboxes[keep_ind]
-	bboxes = calibrate_bboxes(bboxes, offsets[keep_ind])
-	bboxes = square_up(bboxes)
-	bboxes[:,:4] = np.round(bboxes[:,:4])
+    # Keep only the output for which we are certain that
+    # it refers to a face with respect to a probability threshold
+    offsets, probs, bboxes = output_clean(
+        PROB_THRESHOLDS[1], offsets, probs, bboxes)
 
-	return bboxes
+    # Clean up bboxes detected in current stage
+    bboxes = bbox_clean_up(bboxes=np.hstack(
+        [bboxes, offsets]), threshold=NMS_THRESHOLDS[1])
+
+    return bboxes
 
 
 def stage_three(net, bboxes, img):
-	''' Runs the stage three of the face
-		detection process.
-	'''
-	img_patches = get_image_patches(bboxes, img, 48)
-	offsets, probs, landmarks = net(img_patches)	
+    ''' Runs the stage three of the face
+        detection process.
 
-	offsets = offsets.detach().data.numpy()
-	# We only keep the probability that bbxes contain
-	# a face. Pretrained PNet has complementary output.
-	probs = probs.detach().data.numpy()[:,1]
+    Arguments:
+        net (nn.Module): RNet instance
+        bboxes (numpy.ndarray): detected bboxes
+                                in the second stage
+        img (PIL image): input image
+    Returns:
+        bboxes (numpy.ndarray): detected bboxes
+                                in the third stage
+    '''
+    # Acquire image patches based on bbox coords
+    img_patches = get_image_patches(bboxes, img, 48)
+    # Propagate the image patches through ONet
+    offsets, probs, landmarks = net(img_patches)
 
-	landmarks = landmarks.detach().data.numpy()
+    offsets = offsets.detach().data.numpy()
+    # We only keep the probability that bbxes contain
+    # a face. Pretrained PNet has complementary output.
+    probs = probs.detach().data.numpy()[:, 1]
+    landmarks = landmarks.detach().data.numpy()
 
-	width = (bboxes[:, 2] - bboxes[:, 0]) + 1
-	height = (bboxes[:, 3] - bboxes[:, 1]) + 1
+    # Keep only the output for which we are certain that
+    # it refers to a face with respect to a probability threshold
+    offsets, probs, bboxes, landmarks = output_clean(
+        PROB_THRESHOLDS[2], offsets, probs, bboxes, landmarks)
 
-	landmarks[:,:5] = np.expand_dims(bboxes[:, 0],1) \
-					+ landmarks[:,:5]*(np.expand_dims(width, 1))
-	landmarks[:,5:] = np.expand_dims(bboxes[:, 1],1) \
-					+ landmarks[:,5:]*(np.expand_dims(height, 1))
+    # Landmark output is given relative to size of the bboxes
+    # We need to calculate the absolute position of the landmarks
+    width = np.expand_dims((bboxes[:, 2] - bboxes[:, 0]) + 1, 1)
+    height = np.expand_dims((bboxes[:, 3] - bboxes[:, 1]) + 1, 1)
 
-	keep_ind = nms(bboxes, NMS_THRESHOLDS[2], 'minimum')
-	bboxes = bboxes[keep_ind]
-	bboxes = calibrate_bboxes(bboxes, offsets[keep_ind])
-	bboxes = square_up(bboxes)
-	bboxes[:,:4] = np.round(bboxes[:,:4])
+    landmarks[:, 0:5] = np.expand_dims(
+        bboxes[:, 0], 1) + width * landmarks[:, 0:5]
+    landmarks[:, 5:10] = np.expand_dims(
+        bboxes[:, 1], 1) + height * landmarks[:, 5:10]
+
+    # Calibrate and clean up residual bboxes
+    bboxes = calibrate_bboxes(bboxes, offsets)
+    bboxes[:, :4] = np.round(bboxes[:, :4])
+
+    keep_ind = nms(bboxes, NMS_THRESHOLDS[2], 'minimum')
+    bboxes, landmarks = bboxes[keep_ind], landmarks[keep_ind]
+
+    return bboxes, landmarks
 
 
 def PNetInference(net, img, scale):
-	# Prepare image for PNet
-	img = prepare_image(img, scale)
+    ''' Propagates the input image through PNet.
+        But beforehad, image is scaled and prepared
+        for PyTorch model. Generates bboxes and 
+        performs NMS on detected faces.
 
-	# Get the offsets and probabilities by using PNet
-	offsets, probs = net(img)
-	offsets = offsets.detach().data.numpy()
+    Arguments:
+        net (nn.Module): PNet instance
+        img (PIL image): input image
+        scale (float): scale ratio for w&h
+    Returns:
+        bboxes (numpy.ndarray): detected bboxes (after NMS)
+    '''
+    # Prepare the image for PNet
+    img = prepare_image(img, scale)
+    # Propagate the image through PNet
+    offsets, probs = output = net(img)
 
-	# We only keep the probability that bbxes contain
-	# a face. Pretrained PNet has complementary output.
-	probs = probs.detach().data.numpy()[0, 1, :, :]
-	bboxes = generate_bboxes(offsets, probs, scale, PROB_THRESHOLDS[0])
+    # Since PNet has complementary output for
+    # probabilities we keep only prob. that
+    # bbox contains a face
+    probs = probs.data.numpy()[0, 1, :, :]
+    offsets = offsets.data.numpy()
 
-	keep_ind = nms(bboxes, 0.5)
-	return bboxes[keep_ind]
+    # Generate bboxes from the PNet output
+    boxes = generate_bboxes(offsets, probs, scale, PROB_THRESHOLDS[0])
+    if len(boxes) == 0:
+        return None
+
+    return boxes
