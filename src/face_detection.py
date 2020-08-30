@@ -51,10 +51,10 @@ def stage_two(net, bboxes, img):
     # Propagate the image patches through the RNet
     offsets, probs = net(img_patches)
 
-    offsets = offsets.detach().data.numpy()
+    offsets = offsets.cpu().data.numpy()
     # We only keep the probability that bbxes contain
     # a face. Pretrained PNet has complementary output.
-    probs = probs.detach().data.numpy()[:, 1]
+    probs = probs.cpu().data.numpy()[:, 1]
 
     # Keep only the output for which we are certain that
     # it refers to a face with respect to a probability threshold
@@ -86,11 +86,11 @@ def stage_three(net, bboxes, img):
     # Propagate the image patches through ONet
     offsets, probs, landmarks = net(img_patches)
 
-    offsets = offsets.detach().data.numpy()
+    offsets = offsets.cpu().data.numpy()
     # We only keep the probability that bbxes contain
     # a face. Pretrained PNet has complementary output.
-    probs = probs.detach().data.numpy()[:, 1]
-    landmarks = landmarks.detach().data.numpy()
+    probs = probs.cpu().data.numpy()[:, 1]
+    landmarks = landmarks.cpu().data.numpy()
 
     # Keep only the output for which we are certain that
     # it refers to a face with respect to a probability threshold

@@ -116,7 +116,7 @@ def get_image_patches(bounding_boxes, img, patch_size):
         patch = np.array(patch, 'float32')
 
         # Prepare the extracted patch for the PyTorch nn.Module
-        patches[ind, :, :, :] = prepare_image(patch)
+        patches[ind, :, :, :] = prepare_image(patch).cpu().numpy()
 
     patches = torch.from_numpy(patches)
     patches.requires_grad = False
