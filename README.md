@@ -3,7 +3,8 @@ PyTorch implementation of [Multi Task CNN paper](https://arxiv.org/abs/1604.0287
 
 # The algorithm
 The algorithm performs 3 stage detection process. Each stage uses different CNN, therefore this detection system is represented as a cascade system of three CNNs.
-Stages:
+
+## Stages:
 1. First CNN: P-Net (Proposal Network) produces initial guesses (candidates) for bounding boxes of faces, along with probabilities that those boxes contain a face. Some of the proposed candidates are rejected due to probability threshold and NMS. Bounding boxes are calibrated
 2. Second CNN: R-Net (Refinement Network) refines former candidates in order to get a better estimate. Some of the proposed candidates are rejected due to probability threshold and NMS. Bounding boxes are calibrated
 3. Third CNN: O-net (Output Network) outputs final estimates of bounding boxes and according facial landmark positions
