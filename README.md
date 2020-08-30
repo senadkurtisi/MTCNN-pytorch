@@ -11,14 +11,14 @@ Stages:
 CNNs are pretrained and used as such. This repo is an implementation of [Zhang's](https://kpzhang93.github.io/) work. The weights can be found in the [pretrained weights](src/pretrained_weights) folder.
 
 # Results
-<img src="results/girls.jpg" width="480" height="360">
+<img src="results/girls_out.jpg" width="480" height="360">
 
-<img src="results/children.jpg" width="480" height="360">
+<img src="results/children_out.jpg" width="480" height="360">
 
-<img src="results/students.jpg" width="480" height="360">
+<img src="results/students_out.jpg" width="480" height="360">
 
 # Instructions
-1. Open Anaconda Prompt and navigate to the directory of this repo by using: ```cd path_to_this_repo ```
+1. Open Anaconda Prompt and navigate to the directory of this repo by using: ```cd PATH_TO_THIS_REPO ```
 2. Execute ``` conda env create -f environment.yml ``` This will set up an environment with all necessary dependencies. 
 3. Activate previously created environment by executing: ``` conda activate mtcnn-pytorch ```
 4. Start the main script for face detection: ``` python main.py --img_loc PATH_TO_IMAGE ``` or just execute ``` python main.py ``` and use default locations for image. Default locations is: imgs/girls.jpg
