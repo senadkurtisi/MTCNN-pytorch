@@ -20,7 +20,7 @@ CNNs are pretrained and used as such. This repo is an implementation of [Zhang's
 1. Open Anaconda Prompt and navigate to the directory of this repo by using: ```cd PATH_TO_THIS_REPO ```
 2. Execute ``` conda env create -f environment.yml ``` This will set up an environment with all necessary dependencies. 
 3. Activate previously created environment by executing: ``` conda activate mtcnn-pytorch ```
-4. Start the main script for face detection: ``` python main.py --img_loc PATH_TO_IMAGE ``` or just execute ``` python main.py ``` and use default locations for image. Default location is: imgs/girls.jpg
+4. Start the main script for face detection: ``` python src/main.py --img_loc PATH_TO_IMAGE ``` or just execute ``` python src/main.py ``` and use default locations for image. Default location is: imgs/girls.jpg
 
 # References
 This repo is heavily inspired by these two repositories:
