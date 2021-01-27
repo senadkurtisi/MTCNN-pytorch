@@ -55,7 +55,6 @@ def stage_two(net, bboxes, img):
     # We only keep the probability that bbxes contain
     # a face. Pretrained PNet has complementary output.
     probs = probs.cpu().data.numpy()[:, 1]
-
     # Keep only the output for which we are certain that
     # it refers to a face with respect to a probability threshold
     offsets, probs, bboxes = output_clean(
@@ -133,13 +132,13 @@ def PNetInference(net, img, scale):
     # Prepare the image for PNet
     img = prepare_image(img, scale)
     # Propagate the image through PNet
-    offsets, probs = output = net(img)
+    offsets, probs = net(img)
 
     # Since PNet has complementary output for
     # probabilities we keep only prob. that
     # bbox contains a face
-    probs = probs.data.numpy()[0, 1, :, :]
-    offsets = offsets.data.numpy()
+    probs = probs.cpu().data.numpy()[0, 1, :, :]
+    offsets = offsets.cpu().data.numpy()
 
     # Generate bboxes from the PNet output
     boxes = generate_bboxes(offsets, probs, scale, PROB_THRESHOLDS[0])

@@ -49,8 +49,8 @@ def prepare_image(img, scale=None):
 
 def create_scales(img):
     ''' Creates scale ratios used to scale the
-            input image in order to create the image
-            pyramid.
+        input image in order to create the image
+        pyramid.
 
     Arguments:
         img(torch.Tensor): input image
